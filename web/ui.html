@@ -596,7 +596,10 @@ const descOf = (p) => p?.meta?.description || p?.meta?.desc || "";
 const fieldText = (v) => (Array.isArray(v) ? v.join(", ") : v == null ? "" : String(v));
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  const o = { ...(opts || {}) };
+  // 写操作必须带回令牌（服务端注入）：跨站脚本读不到本机响应，拿不到它
+  o.headers = { ...(o.headers || {}), "x-agent-purge-token": window.__AP_TOKEN__ || "" };
+  const r = await fetch(path, o);
   const txt = await r.text();
   let j; try { j = JSON.parse(txt); } catch { throw new Error(txt.slice(0, 200)); }
   if (!r.ok || j.error) throw new Error(j.error || r.status);

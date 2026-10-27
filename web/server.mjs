@@ -51,6 +51,13 @@ async function handle(req, res) {
 	const p = url.pathname;
 
 	if (req.method === "GET" && (p === "/" || p === "/index.html")) return html(res);
+
+	// CSRF: 本机页面之外的任何来源都能 POST 到 127.0.0.1:7788（text/plain 能让 preflight 消失），
+	// 而这里的写操作会改各 harness 的系统提示词。三重闸门：同源、JSON、一次性令牌。
+	if (req.method !== "GET" && p.startsWith("/api/")) {
+		const denied = writeGuard(req);
+		if (denied) return send(res, 403, { error: denied });
+	}
 	if (req.method === "GET" && p === "/api/state") return send(res, 200, await state(url.searchParams.get("versions") === "1"));
 	if (req.method === "GET" && p === "/api/armor") return send(res, 200, armorState());
 	if (req.method === "POST" && p === "/api/defaults") return send(res, 200, saveDefaults(await body(req)));
@@ -349,10 +356,40 @@ function armChannel(harness, channel, verb, id) {
 }
 
 const send = (res, code, obj) => res.writeHead(code, { "content-type": "application/json; charset=utf-8" }).end(JSON.stringify(obj));
+
+// 进程内一次性令牌：注入进 UI，写操作必须带回。跨站脚本拿不到它（读不了本机响应）。
+const TOKEN = globalThis.crypto.randomUUID();
+
+/** 写请求的闸门。返回拒绝原因，或 null 表示放行。 */
+function writeGuard(req) {
+	const ctype = String(req.headers["content-type"] || "").toLowerCase();
+	// text/plain 是跨站「简单请求」的通行证：不带这个检查，preflight 根本不会发生
+	if (!ctype.startsWith("application/json")) return "content-type must be application/json";
+	const site = String(req.headers["sec-fetch-site"] || "");
+	if (site && site !== "same-origin" && site !== "none") return `cross-site request blocked (sec-fetch-site: ${site})`;
+	const origin = req.headers.origin;
+	if (origin) {
+		let host = "";
+		try {
+			host = new URL(origin).host;
+		} catch {
+			return "bad origin";
+		}
+		if (host !== req.headers.host) return `cross-origin request blocked (origin: ${origin})`;
+	}
+	if (req.headers["x-agent-purge-token"] !== TOKEN) return "missing or wrong x-agent-purge-token";
+	return null;
+}
+
 const html = (res) =>
 	res
 		.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
-		.end(readFileSync(join(ROOT, "web", "ui.html"), "utf8"));
+		.end(
+			readFileSync(join(ROOT, "web", "ui.html"), "utf8").replace(
+				"</head>",
+				`<script>window.__AP_TOKEN__ = ${JSON.stringify(TOKEN)};</script></head>`,
+			),
+		);
 
 function body(req) {
 	return new Promise((resolve) => {
