@@ -38,10 +38,10 @@
 			"inject": true,
 			"hotSwitch": true,
 			"patch": false,
-			"launcher": "opencode（cwd 下 .opencode/plugin/*.ts 原地 splice output.system）",
+			"launcher": "opencode（cwd 下 .opencode/plugin/*.ts，V2 插件：default 导出 + setup(ctx) 里 ctx.session.hook(\"context\") 原地 splice event.system）",
 			"defaultSystemChars": 19332,
 			"purgedSystemChars": 112,
-			"measuredVersion": "1.19.3",
+			"measuredVersion": "2.1.4",
 			"verify": "capture.mjs",
 			"armor": {
 				"probe": {

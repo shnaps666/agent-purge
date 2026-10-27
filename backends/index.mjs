@@ -64,15 +64,19 @@ export const backends = {
 				},
 
 	// opencode 靠 cwd 下 .opencode/plugin/*.ts 发现插件，必须原地 splice
+	// opencode 2.x 只认 V2：default 导出 + id + setup(ctx)，钩子挂在 ctx.session.hook("context")
 	opencode: ({ personaText, mode, cwd, args }) => {
 		if (mode === "off") return { cmd: "opencode", args: [...args] };
 		const dir = join(cwd, ".opencode", "plugin");
 		const file = join(dir, "agent-purge.ts");
-		const src = `export const AgentPurge = async () => ({
-  "experimental.chat.system.transform": async (_input, output) => {
-    output.system.splice(0, output.system.length, ${JSON.stringify(inline(personaText))});
+		const src = `export default {
+  id: "agent-purge",
+  async setup(ctx) {
+    await ctx.session.hook("context", (event) => {
+      event.system.splice(0, event.system.length, { type: "text", text: ${JSON.stringify(inline(personaText))} });
+    });
   },
-});
+};
 `;
 		return {
 			cmd: "opencode",
