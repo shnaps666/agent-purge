@@ -41,7 +41,7 @@ export const backends = {
 				: mode === "append"
 					? ["--append-system-prompt-file", personaPath, ...args]
 					: ["--system-prompt-file", personaPath, ...args],
-		residueHint: mode === "off" ? "" : "不补丁时残留 62 字身份句",
+		residueHint: mode === "off" ? "" : "без патча остаётся 62-символьная фраза идентичности",
 	}),
 
 	grok: ({ personaText, mode, args }) => ({
@@ -60,7 +60,7 @@ export const backends = {
 			: {
 					cmd: "omp",
 					args: ["--system-prompt", inline(personaText), ...args],
-					residueHint: "MCP tool routes 仍会追加（10K 量级），关掉 MCP server 可缩",
+					residueHint: "MCP tool routes всё равно добавляются (порядка 10K), отключение MCP server уменьшит объём",
 				},
 
 	// opencode 靠 cwd 下 .opencode/plugin/*.ts 发现插件，必须原地 splice
@@ -80,7 +80,7 @@ export const backends = {
 `;
 		return {
 			cmd: "opencode",
-			note: "[plugin] .opencode/plugin/agent-purge.ts（原地 splice output.system）",
+			note: "[plugin] .opencode/plugin/agent-purge.ts (splice output.system на месте)",
 			args,
 			setup: () => {
 				mkdirSync(dir, { recursive: true });
@@ -93,25 +93,25 @@ export const backends = {
 	// 需要落盘或调用方配合，CLI 不代劳，只给可复制的配方
 	zcode: () => ({
 		manual: [
-			"CLI 拿不到 customSystemPrompt（只有 app-server/SDK 能传）；CLI 只有 UserPromptSubmit hook 注入，且落在 user 角色。",
-			"注入配方: ~/.zcode/cli/config.json 里 hooks.enabled=true + UserPromptSubmit hook 返回 additionalContext。",
-			"归零配方: 等长替换 resources/glm/zcode.cjs 里的 IJs（42 字），但 cli_prefix 段仍留 42 字。",
+			"CLI не может передать customSystemPrompt (это умеет только app-server/SDK); в CLI инъекция возможна только через hook UserPromptSubmit, и попадает она в роль user.",
+			"Рецепт инъекции: в ~/.zcode/cli/config.json hooks.enabled=true + UserPromptSubmit hook возвращает additionalContext.",
+			"Рецепт обнуления: замена равной длины IJs в resources/glm/zcode.cjs (42 символа), но в сегменте cli_prefix остаются те же 42 символа.",
 		],
 	}),
 
 	hermes: () => ({
 		manual: [
-			"hermes 从 $HERMES_HOME/SOUL.md 取身份段。",
-			"配方: 复制现有 HERMES_HOME 到 .sandbox/hermes-home，覆盖 SOUL.md，再 HERMES_HOME=<该目录> 启动。",
-			"必须加 --ignore-rules: Hermes 自带的 rules 层会把人设顶回去（实测不加时它自称 Hermes 并明说“这一条我不照办”，加了立刻完全采纳）。",
-			"注意首次启动会自装 Python 依赖（约 80 秒）。",
+			"hermes берёт блок идентичности из $HERMES_HOME/SOUL.md.",
+			"Рецепт: скопируйте текущий HERMES_HOME в .sandbox/hermes-home, перезапишите SOUL.md, затем запускайте с HERMES_HOME=<этот каталог>.",
+			"Обязателен --ignore-rules: встроенный слой rules у Hermes откатывает persona (в замере без него модель называет себя Hermes и прямо говорит «это правило я не выполню», с ним сразу принимает полностью).",
+			"Учтите: при первом запуске он сам ставит Python-зависимости (около 80 секунд).",
 		],
 	}),
 
 	antigravity: () => ({
 		manual: [
-			"prompt 在 resources/bin/language_server.exe（Go embed.FS）。",
-			"闭源 App 的身份句在二进制里，只能等长替换；改动会使签名失效、更新被覆盖，所以默认不做。",
+			"prompt лежит в resources/bin/language_server.exe (Go embed.FS).",
+			"Фраза идентичности закрытого App зашита в бинарник, возможна только замена равной длины; правка ломает подпись и затирается обновлением, поэтому по умолчанию не делается.",
 		],
 	}),
 
@@ -128,7 +128,7 @@ export const oneshots = {
 	pi: ({ prompt }) => ({
 		cmd: "pi",
 		args: ["-p", prompt],
-		note: "注入靠扩展（sys 层）；人设走 state.json，不占命令行",
+		note: "инъекция через расширение (слой sys); persona идёт через state.json, не занимает командную строку",
 	}),
 	claude: ({ prompt, personaPath, mode }) => ({
 		cmd: "claude",
@@ -160,7 +160,7 @@ export const oneshots = {
 	zcode: ({ prompt }) => ({
 		cmd: "zcode",
 		args: ["--prompt", prompt, "--mode", "yolo", "--output-format", "stream-json", "--no-color"],
-		note: "persona 对 zcode CLI 不生效：customSystemPrompt 只有 app-server/SDK 能传",
+		note: "persona для zcode CLI не работает: customSystemPrompt может передать только app-server/SDK",
 	}),
 	codebuddy: ({ prompt, personaPath, personaText, mode }) => ({
 		cmd: "codebuddy",
@@ -180,6 +180,6 @@ export const oneshots = {
 		cmd: "hermes",
 		// --ignore-rules 是关键：不加时 Hermes 自带 rules 层会把人设顶回去（模型自称 Hermes、明说“不照办”）。
 		args: ["-z", prompt, ...(mode === "off" ? [] : ["--ignore-rules"])],
-		note: "身份段来自 $HERMES_HOME/SOUL.md；注入时必须带 --ignore-rules，关电源时不带",
+		note: "блок идентичности берётся из $HERMES_HOME/SOUL.md; при инъекции обязателен --ignore-rules, при выключении — без него",
 	}),
 };

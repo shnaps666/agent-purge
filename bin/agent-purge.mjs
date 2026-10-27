@@ -5,7 +5,13 @@
 // 命令只有两类，别再分第三类：
 //   选东西（写 state.json）   use / mode / install / arm / slash
 //   用东西（跑起来）           <harness> / 裸敲已 arm 的命令名 / web / ls / status
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+// Windows: без UTF-8 кодовая страница консоли (866/1251) превращает кириллицу в кракозябры
+if (process.platform === "win32") {
+	try {
+		execFileSync("cmd", ["/c", "chcp", "65001"], { stdio: "ignore" });
+	} catch {}
+}
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,10 +29,27 @@ const DATA = ensureDataHome(ROOT).home;
 const matrix = JSON.parse(readFileSync(join(ROOT, "matrix.json"), "utf8"));
 
 const argv = process.argv.slice(2);
+
+// коды действий persist-слоя → человеческий текст
+const ACTION_RU = {
+	"wrote-whole-file": "файл записан",
+	"replaced-block": "блок заменён",
+	"appended-block": "блок добавлен",
+	"deleted-file": "файл удалён",
+	"already-gone": "уже отсутствовало",
+	"no-block": "блока не было",
+};
+function act(a) {
+	return ACTION_RU[a] ?? a;
+}
+
 installCrashHandlers();
-const recovered = recover(); // 上次进程被杀时留下的半改配置，开机先回滚
-if (recovered > 0) console.log(`[restore] 回滚了 ${recovered} 个上次残留的配置文件`);
-if (argv.includes("--help") || argv.includes("-h")) help(); // 永远优先于默认值
+const recovered = recover(); // 上次进程被杀时留下的半改配置, 开机先回滚
+if (recovered > 0) console.log(`[restore] откатил ${recovered} файл(а) конфигурации после прошлого аварийного выхода`);
+if (argv.includes("--help") || argv.includes("-h")) {
+	help(); // 永远优先于默认值
+	process.exit(0); // иначе после справки запускается harness по умолчанию
+}
 const flag = (name, fallback) => {
 	const i = argv.indexOf(name);
 	return i === -1 ? fallback : argv[i + 1];
@@ -88,52 +111,52 @@ async function defaultHarness() {
 	const { state } = loadState(DATA);
 	const harness = state.default?.harness;
 	if (!harness) {
-		console.log("还没有默认 harness。两种办法：\n  agent-purge web           在浏览器里选，再点“设为默认执行器”\n  agent-purge <harness>     直接点名跑（如 agent-purge codex）");
+		console.log("Harness по умолчанию не выбран. Два варианта:\n  agent-purge web           выбрать в браузере и нажать «сделать исполнителем по умолчанию»\n  agent-purge <harness>     запустить конкретный (например, agent-purge codex)");
 		process.exit(0);
 	}
-	console.log(`[default] ${harness} · ${state.default.mode} · persona=${state.persona ?? "-"}（state.json）`);
+	console.log(`[default] ${harness} · ${state.default.mode} · persona=${state.persona ?? "-"}(state.json)`);
 	return harness;
 }
 
 async function launch(name) {
 	const spec = matrix.harnesses[name];
-	if (!spec) die(`未知 harness: ${name}（可用: ${Object.keys(matrix.harnesses).join(", ")}；子命令见 --help）`);
-	if (spec.class === "unsupported") die(`${name} 做不到：${spec.reason}`);
+	if (!spec) die(`неизвестный harness: ${name} (доступны: ${Object.keys(matrix.harnesses).join(", ")}; подкоманды — в --help)`);
+	if (spec.class === "unsupported") die(`${name} не поддерживается: ${spec.reason}`);
 
 	const { state } = loadState(DATA);
 	// 由 state.json 决定注入方式；显式 --mode 永远压过它
 	const explicitMode = flag("--mode", null);
-	if (explicitMode !== null && !MODES.includes(explicitMode)) die(`--mode 只能是 ${MODES.join(" / ")}`);
+	if (explicitMode !== null && !MODES.includes(explicitMode)) die(`--mode принимает только ${MODES.join(" / ")}`);
 	const mode = explicitMode ?? state.default?.mode ?? "replace";
 
 	// 裸敲 pi 的持久位（写 state.json，扩展下一会话读它）
 	const autoFlag = name === "pi" ? flag("--auto", null) : null;
 	if (autoFlag !== null) {
-		if (autoFlag !== "on" && autoFlag !== "off") die("--auto 只能是 on / off");
+		if (autoFlag !== "on" && autoFlag !== "off") die("--auto принимает только on / off");
 		const { setPiAuto } = await import("../lib/state.mjs");
 		setPiAuto(DATA, autoFlag === "on");
-		console.log(`[auto] 裸敲 pi ${autoFlag === "on" ? "会" : "不会"}自动注入（已写入 state.json）`);
+		console.log(`[auto] запуск pi без аргументов ${autoFlag === "on" ? "будет" : "не будет"} инжектить персону (записано в state.json)`);
 	}
 
 	// pi 的人设落在哪一层：sys（默认，真系统提示词）或 user（塞进用户消息，给忽略 system 的模型）
 	const layerFlag = name === "pi" ? flag("--layer", null) : null;
 	if (layerFlag !== null) {
-		if (layerFlag !== "sys" && layerFlag !== "user") die("--layer 只能是 sys / user");
+		if (layerFlag !== "sys" && layerFlag !== "user") die("--layer принимает только sys / user");
 		const { setPiUserLayer } = await import("../lib/state.mjs");
 		setPiUserLayer(DATA, layerFlag === "user");
 		console.log(
 			layerFlag === "user"
-				? "[layer] 人设额外塞进用户消息（给忽略 system 的模型用；代价是每条消息多一段）"
-				: "[layer] 人设走 system 层（默认）",
+				? "[layer] персона дополнительно кладётся в пользовательское сообщение (для моделей, игнорирующих system; цена — лишний блок в каждом сообщении)"
+				: "[layer] персона идёт в слой system (по умолчанию)",
 		);
 	}
 
 	// 实测策略：该 harness 的哪一层真的能注入（数据来自 matrix.json armor 段）
 	const { plan } = await import("../lib/armor.mjs");
 	const strategy = plan(matrix, name);	if (!strategy.error) {
-		if (strategy.requiresSeed) console.log(`[策略] ${name}：裸注入 sys 层实测 ${strategy.bare.sys}%，带人设词种子 ${strategy.persona.sys}% —— 需要 seed 层`);
+		if (strategy.requiresSeed) console.log(`[стратегия] ${name}: чистая инъекция в sys на замерах ${strategy.bare.sys}%, с seed-фразой персоны ${strategy.persona.sys}% — нужен seed-слой`);
 		const noSys = strategy.blocked.find((b) => b.layer === "sys");
-		if (noSys && mode !== "off") console.log(`[策略] ${name}：sys 层不可用（${noSys.reason}），本次只能靠 user 层`);
+		if (noSys && mode !== "off") console.log(`[стратегия] ${name}: слой sys недоступен (${noSys.reason}), в этот раз только слой user`);
 	}
 
 	// 通道全废的家（闭源桌面 / 提示词在服务端）说清楚：这次只是原样启动，没注入任何东西
@@ -141,7 +164,7 @@ async function launch(name) {
 		const c = capsFor(name);
 		if (!c.shim.ok && !c.install.ok && !c.slash.ok && mode !== "off") {
 			const why = [c.shim, c.install, c.slash].map((x) => x.why).filter(Boolean)[0];
-			console.log(`[提示] ${name} 注入不进去，本次是原样启动：${why}`);
+			console.log(`[подсказка] ${name}: инъекция невозможна, запуск без изменений: ${why}`);
 		}
 	}
 
@@ -154,12 +177,12 @@ async function launch(name) {
 	if (!picked && personaName === "active") {
 		const first = store.list()[0];
 		if (first) {
-			console.warn(`[warn] active 指向不存在的 persona: ${pickedName ?? "(空)"}，本次回退到 ${first.id}（agent-purge use ${first.id} 可写回指针）`);
+			console.warn(`[warn] active указывает на несуществующую persona: ${pickedName ?? "(пусто)"}, откат на ${first.id} (agent-purge use ${first.id} — записать указатель обратно)`);
 			pickedName = first.id;
 			picked = first;
 		}
 	}
-	if (!picked) die(`没有 persona: ${pickedName}（可用: ${store.list().map((p) => p.id).join(", ")}）`);
+	if (!picked) die(`нет persona: ${pickedName} (доступны: ${store.list().map((p) => p.id).join(", ")})`);
 	const personaPath = store.materialize(picked.id);
 	const personaText = picked.body.trim();
 	const cwd = resolve(flag("--cwd", process.cwd()));
@@ -189,24 +212,24 @@ async function launch(name) {
 	let built;
 	if (askIdx !== -1) {
 		const raw = argv[askIdx + 1];
-		if (!raw || raw.startsWith("--")) die('--ask 需要一个 prompt，例如: agent-purge codex --ask "解释这段代码"');
+		if (!raw || raw.startsWith("--")) die('--ask требует запрос, например: agent-purge codex --ask "объясни этот код"');
 		const prompt = raw.trim();
 		const one = oneshots[name];
-		if (!one) die(`${name} 没有一次性运行模式（可用: ${Object.keys(oneshots).join(", ")}）`);
+		if (!one) die(`${name} не поддерживает одноразовый запуск (доступны: ${Object.keys(oneshots).join(", ")})`);
 		built = one({ prompt, personaPath, personaText, mode, cwd });
 		if (passthrough.length) built.args = [...built.args, ...passthrough];
 	} else {
 		built = backends[name]?.({ personaPath, personaText, mode, args: passthrough, cwd, reason: spec.reason }) ?? {
-			unsupported: "该 harness 还没有后端实现",
+			unsupported: "для этого harness ещё нет реализации",
 		};
 	}
 
 	if (built.manual) {
-		console.log(`${name}: 需要人工介入`);
+		console.log(`${name}: нужны действия вручную`);
 		built.manual.forEach((line) => console.log("  - " + line));
 		process.exit(0);
 	}
-	if (built.unsupported) die(`${name} 做不到：${built.unsupported}`);
+	if (built.unsupported) die(`${name} не поддерживается: ${built.unsupported}`);
 
 	if (built.note) console.log(built.note);
 	if (built.residueHint) console.log(`[residue] ${built.residueHint}`);
@@ -215,8 +238,8 @@ async function launch(name) {
 		const globalOff = (state.default?.mode ?? "") === "off";
 		console.log(
 			globalOff
-				? "[off] 总电源关着（state.default.mode=off）：本轮原样启动，不装扩展、不注入；要注入就先去 UI 把总开关拧开，或 --mode replace/strict/append"
-				: "[off] 本轮不注入（--mode off）：原样启动；全局默认仍是 " + (state.default?.mode ?? "?") + "，想改默认用 agent-purge mode <模式>",
+				? "[off] общий выключатель выключен (state.default.mode=off): запуск как есть, расширения не ставятся, инъекции нет; чтобы включить — поднимите тумблер в UI или укажите --mode replace/strict/append"
+				: "[off] в этот раз без инъекции (--mode off): запуск как есть; глобальное значение по умолчанию — " + (state.default?.mode ?? "?") + ", изменить: agent-purge mode <режим>",
 		);
 	}
 	console.log(`[cmd] ${[built.cmd, ...built.args.map((a) => (a.includes(" ") ? JSON.stringify(a) : a))].join(" ")}`);
@@ -237,7 +260,7 @@ async function launch(name) {
 	}
 
 	if (!resolveBin(built.cmd)) {
-		die(`${name}: 找不到可执行文件 ${built.cmd}（PATH 里没有它；agent-purge doctor 可看本机探测结果）`);
+		die(`${name}: не найден исполняемый файл ${built.cmd} (его нет в PATH; что найдено на машине — agent-purge doctor)`);
 	}
 	built.setup?.();
 	// 一次性问答：stdin 直接给 NUL。否则 codex 这类会先“Reading additional input from stdin...”
@@ -266,10 +289,10 @@ async function useCmd() {
 
 	const id = arg && !arg.startsWith("-") ? arg : state.persona;
 	if (!id) {
-		console.log(`当前 persona: (未设置)\n可用: ${store.list().map((p) => p.id).join(", ")}`);
+		console.log(`текущая persona: (не выбрана)\nдоступны: ${store.list().map((p) => p.id).join(", ")}`);
 		return;
 	}
-	if (!store.read(id)) die(`没有 persona: ${id}（可用: ${store.list().map((p) => p.id).join(", ")}）`);
+	if (!store.read(id)) die(`нет persona: ${id} (доступны: ${store.list().map((p) => p.id).join(", ")})`);
 	store.setActive(id); // 写 active.md 快照 + state.persona 指针
 
 	// user 层的 /purge 命令文件是烘焙进去的，换人设必须重渲染
@@ -278,10 +301,10 @@ async function useCmd() {
 		personaId: id,
 		personaBody: store.read(id).body.trim(),
 	});
-	console.log(`persona ← ${id}（active.md 已同步）`);
-	refreshed.forEach((f) => console.log(`[slash] 重新写入 ${f}`));
+	console.log(`persona ← ${id} (active.md синхронизирован)`);
+	refreshed.forEach((f) => console.log(`[slash] перезаписан ${f}`));
 	if (Object.keys(state.armed ?? {}).length) {
-		console.log("已武装的 harness 下一轮/下次启动自动跟随；落盘型（install）若想立刻同步：agent-purge install <h>");
+		console.log("у включённых harness персона подхватится со следующего запуска; если нужен снимок в конфиге прямо сейчас: agent-purge install <h>");
 	}
 }
 
@@ -292,18 +315,18 @@ function modeCmd() {
 	if (!want) {
 		console.log(
 			[
-				`当前注入方式: ${current}`,
-				"  strict  只发人设（宿主提示词全丢，最干净）",
-				"  replace 人设在前 + 宿主提示词剔除身份句（默认，官方仍认得你）",
-				"  append  人设只挂在最前，宿主原样保留（最保守）",
-				"  off     不注入（受管 harness 也能干净地裸用）",
+				`текущий способ инъекции: ${current}`,
+				"  strict  только персона (родной промпт теряется полностью, самый чистый)",
+				"  replace персона впереди + из родного промпта вырезается фраза-идентичность (по умолчанию, вендор всё ещё узнаёт вас)",
+				"  append  персона только в начало, родной промпт не тронут (самый осторожный)",
+				"  off     без инъекции (управляемый harness можно запускать как обычно)",
 			].join("\n"),
 		);
 		return;
 	}
-	if (!MODES.includes(want)) die(`mode 只能是 ${MODES.join(" / ")}`);
+	if (!MODES.includes(want)) die(`mode принимает только ${MODES.join(" / ")}`);
 	setDefault(DATA, { harness: state.default?.harness ?? "codex", mode: want });
-	console.log(`mode ← ${want}（state.json；下次启动生效，--mode 可临时覆盖）`);
+	console.log(`mode ← ${want} (state.json; применится при следующем запуске, --mode перекрывает разово)`);
 }
 
 async function installCmd(verb, rest) {
@@ -312,10 +335,10 @@ async function installCmd(verb, rest) {
 	const { backends: be } = await import("../backends/index.mjs");
 	for (const h of ids) {
 		const b = be[h];
-		if (!b) die(`未知 harness: ${h}`);
+		if (!b) die(`неизвестный harness: ${h}`);
 		const fn = verb === "install" ? b.install : b.uninstall;
 		if (!fn) {
-			console.log(`${h}: 没有常驻模式（用 arm 走裸命令接管 / slash 走会话内）`);
+			console.log(`${h}: нет постоянной установки (для перехвата имени — arm, для команды в сессии — slash)`);
 			continue;
 		}
 		const spec = matrix.harnesses[h];
@@ -337,7 +360,7 @@ async function armCmd(verb, rest) {
 	const { createStore } = await import("../lib/personas.mjs");
 	const store = createStore(DATA);
 	const pid = store.activeId();
-	if (!pid) die("还没有 persona：先 agent-purge use <id>");
+	if (!pid) die("нет persona: сначала agent-purge use <id>");
 
 	const supported = Object.keys(matrix.harnesses).filter((h) => matrix.harnesses[h].class !== "unsupported");
 	const namedTarget = rest.filter((x) => !x.startsWith("-"));
@@ -365,7 +388,7 @@ async function armCmd(verb, rest) {
 	let armedAny = 0;
 
 	for (const h of targets) {
-		if (!matrix.harnesses[h]) die(`未知 harness: ${h}`);
+		if (!matrix.harnesses[h]) die(`неизвестный harness: ${h}`);
 		const done = [];
 		const skip = [];
 
@@ -380,10 +403,10 @@ async function armCmd(verb, rest) {
 			}
 			if (ch === "install") {
 				const r = verb === "arm" ? install(h, { root: DATA, active: store.refreshActive() }) : uninstall(h);
-				if (r.error) skip.push(`常驻: ${r.error}`);
+				if (r.error) skip.push(`постоянная установка: ${r.error}`);
 				else {
 					setArmed(DATA, h, "install", verb === "arm");
-					done.push(verb === "arm" ? `常驻 ${r.action}` : `撤常驻 ${r.action}`);
+					done.push(verb === "arm" ? `установка: ${act(r.action)}` : `снятие установки: ${act(r.action)}`);
 				}
 			}
 			if (ch === "shim") {
@@ -391,7 +414,7 @@ async function armCmd(verb, rest) {
 				if (r.error) skip.push(`shim: ${r.error}`);
 				else {
 					setArmed(DATA, h, "shim", verb === "arm");
-					done.push(verb === "arm" ? "裸命令接管" : "撤裸命令接管");
+					done.push(verb === "arm" ? "перехват имени команды" : "перехват имени снят");
 				}
 			}
 			if (ch === "slash") {
@@ -402,35 +425,37 @@ async function armCmd(verb, rest) {
 				if (r.error) skip.push(`/purge: ${r.error}`);
 				else {
 					setArmed(DATA, h, "slash", verb === "arm");
-					done.push(verb === "arm" ? `/purge ${r.layer} 层` : "撤 /purge");
+					if (verb === "arm") done.push(`/purge (слой ${r.layer})`);
+					else if (r.removed?.length) done.push(`/purge снят: ${r.removed.length}`);
 				}
 			}
 		}
 		const icon = done.length ? "✓" : "·";
 		if (done.length) armedAny += 1;
-		console.log(`${icon} ${verb} ${h.padEnd(11)} ${done.join(" · ") || "无可用通道"}${skip.length ? "  跳过: " + skip.join("；") : ""}`);
+		
+console.log(`${icon} ${verb} ${h.padEnd(11)} ${done.join(" · ") || "нет доступных каналов"}${skip.length ? "  пропущено: " + skip.join("; ") : ""}`);
 	}
 
 	if (verb === "arm" && armedAny && channels.includes("shim")) {
 		const r = ensureUserPath();
-		console.log(r.changed ? `[path] ${r.dir} → 用户 PATH 最前（${r.how}）` : `[path] ${r.dir} 就位（${r.how}）`);
+		console.log(r.changed ? `[path] ${r.dir} → в начало PATH пользователя (${r.how})` : `[path] ${r.dir} на месте (${r.how})`);
 	}
 	if (verb === "arm") {
 		if (!armedAny) {
-			console.log(`\n一个通道都没装上（${targets.join(", ")}）：上面“跳过”里写了每家为什么不行。`);
+			console.log(`\nни один канал не установлен (${targets.join(", ")}): причины по каждому — в «пропущено» выше.`);
 		} else {
 			const h0 = targets[0];
 			const lines = [];
-			if (channels.includes("shim")) lines.push(`新开终端敲 ${h0} → 走 PATH 前置壳，注入生效`);
+			if (channels.includes("shim")) lines.push(`откройте новый терминал и наберите ${h0} → пойдёт через обёртку в PATH, инъекция работает`);
 			if (channels.includes("slash")) {
 				lines.push(
 					h0 === "pi"
-						? "裸敲 pi 不注入（只装了热切）；会话里打 /purge on 才改写，/purge status 看状态"
-						: "会话里打 /purge 才注入（它展开成用户消息）",
+						? "запуск pi без аргументов не инжектит (установлено только горячее переключение); переписать можно командой /purge on в сессии, состояние — /purge status"
+						: "инъекция только по команде /purge в сессии (она разворачивается в пользовательское сообщение)",
 				);
 			}
-			if (channels.includes("install")) lines.push("改了配置文件：连别人启动的、GUI 里点开的也生效（那家重启后生效）");
-			console.log("\n下一步：\n" + lines.map((l) => "  - " + l).join("\n") + "\n复核：agent-purge status");
+			if (channels.includes("install")) lines.push("конфиг изменён: подействует и на запуски не через agent-purge, и на открытые из GUI (после перезапуска того агента)");
+			console.log("\nчто дальше:\n" + lines.map((l) => "  - " + l).join("\n") + "\nпроверить: agent-purge status");
 		}
 	}
 }
@@ -451,8 +476,8 @@ async function slashCmd(rest) {
 		const dead = rows.filter((s) => !s.offered);
 		if (dead.length) {
 			const still = dead.filter((s) => s.installed).map((s) => s.id);
-			console.log(`\n已下线（user 层，压不住系统提示词）：${dead.map((s) => s.id).join(", ")}`);
-			if (still.length) console.log(`旧文件还在盘上：agent-purge slash off ${still.join(" ")}`);
+			console.log(`\nснято с поддержки (слой user, системный промпт не перекрывает): ${dead.map((s) => s.id).join(", ")}`);
+			if (still.length) console.log(`старые файлы ещё на диске: agent-purge slash off ${still.join(" ")}`);
 		}
 		return;
 	}
@@ -462,19 +487,19 @@ async function slashCmd(rest) {
 			target && target !== "--all"
 				? rest.slice(1).filter((x) => !x.startsWith("-"))
 				: slashStatus(DATA).filter((s) => s.installed).map((s) => s.id);
-		if (!ids.length) console.log("没有装着的 /purge");
+		if (!ids.length) console.log("нет установленных /purge");
 		ids.forEach((h) => {
 			const r = uninstallSlash(h, DATA);
 			if (!r.error) {
 				setArmed(DATA, h, "slash", false);
-				console.log(`✓ 已移除 /purge ${h}${r.removed?.length ? " → " + r.removed.join(", ") : "（本来就没有）"}`);
+				console.log(`✓ /purge удалён: ${h}${r.removed?.length ? " → " + r.removed.join(", ") : " (его и не было)"}`);
 			}
 		});
 		return;
 	}
 	const targets = id === "--all" ? slashStatus(DATA).filter((s) => s.offered).map((s) => s.id) : [id];
 	const pid = store.activeId();
-	if (!pid) die("还没有 persona：先 agent-purge use <id>");
+	if (!pid) die("нет persona: сначала agent-purge use <id>");
 	for (const h of targets) {
 		const r = installSlash(h, DATA, { personaId: pid, personaBody: store.read(pid).body.trim() });
 		if (r.error) {
@@ -482,7 +507,7 @@ async function slashCmd(rest) {
 			continue;
 		}
 		setArmed(DATA, h, "slash", true);
-		console.log(`✓ /purge → ${h}（${r.layer} 层）${r.file}`);
+		console.log(`✓ /purge → ${h} (слой ${r.layer}) ${r.file}`);
 		console.log(`   ${r.note}`);
 	}
 }
@@ -493,36 +518,36 @@ async function statusCmd() {
 	// armed 是缓存，磁盘才是真相：先把假记录摘掉，再报数
 	const { reconcileArmed } = await import("../lib/armed.mjs");
 	const fixed = await reconcileArmed(DATA);
-	if (fixed.length) console.log(`[对账] armed 纠正：${fixed.join(", ")}`);
+	if (fixed.length) console.log(`[сверка] armed исправлен: ${fixed.join(", ")}`);
 	const { state } = loadState(DATA);
 	return Promise.all([import("../lib/shim.mjs"), import("../lib/slashes.mjs")]).then(([shimMod, slashMod]) => {
 		const shims = shimMod.shimStatus();
 		const slashes = slashMod.slashStatus(DATA);
 
-		console.log(`persona  ${state.persona ?? "(未设置)"}`);
-		console.log(`default  ${state.default ? `${state.default.harness} · ${state.default.mode}` : "(未设置)"}   裸敲 agent-purge 用它`);
+		console.log(`persona  ${state.persona ?? "(не выбрана)"}`);
+		console.log(`default  ${state.default ? `${state.default.harness} · ${state.default.mode}` : "(не выбран)"}   его запускает agent-purge без аргументов`);
 		console.log(`state    ${join(DATA, "state.json")}`);
 		console.log("");
-		console.log("harness     shim   slash  install   /purge层  常驻落点");
+		console.log("harness     shim   slash  install   слой /purge  куда ставится");
 		for (const [h] of Object.entries(matrix.harnesses)) {
 			const armed = armedOf(state, h);
 			const sh = shims.find((s) => s.id === h);
 			const sl = slashes.find((s) => s.id === h);
 			const cap = capsFor(h, { bin: sh?.target ?? null });
 			const mark = (on) => (on ? " ✓  " : " ·  ");
-			const slashCol = sl && sl.offered ? (sl.layer === "sys" ? "sys(热)" : "user") : "—";
+			const slashCol = sl && sl.offered ? (sl.layer === "sys" ? "sys(гор.)" : "user") : "—";
 			// install 列不写“注册没注册”，写“能不能装”：装了是 ✓，能装没装是「可用」，没落点才是 —
-			const installCol = armed.includes("install") ? " ✓ " : cap.install.ok ? "可用" : " — ";
-			const landing = cap.install.ok ? `${cap.install.layer || "?"}${cap.install.verified === false ? "(未实测)" : ""}` : (cap.install.why || "");
+			const installCol = armed.includes("install") ? " ✓ " : cap.install.ok ? "можно" : " — ";
+			const landing = cap.install.ok ? `${cap.install.layer || "?"}${cap.install.verified === false ? "(не проверено)" : ""}` : (cap.install.why || "");
 			console.log(
 				`${h.padEnd(11)}${mark(sh?.installed).padEnd(7)}${mark(sl?.installed).padEnd(7)}${installCol.padEnd(10)}${slashCol.padEnd(10)}${landing}`,
 			);
 		}
 		const dir = shimMod.shimDir();
 		const ps = shimMod.pathState();
-		const where = !ps.present ? "不在 PATH" : ps.first ? "已在 PATH 最前" : "在 PATH 但不最前（真身可能先被命中）";
-		console.log(`\nshim 目录 ${dir}（${where}）`);
-		if (!ps.first) console.log(`修好它：agent-purge arm <h> --shim（会自动修正 PATH）`);
+		const where = !ps.present ? "нет в PATH" : ps.first ? "уже в начале PATH" : "в PATH, но не первым (может сработать настоящая команда)";
+		console.log(`\nкаталог shim ${dir} (${where})`);
+		if (!ps.first) console.log(`исправить: agent-purge arm <h> --shim (PATH поправится автоматически)`);
 	});
 }
 
@@ -533,11 +558,11 @@ async function lsCmd() {
 	const fit = store.resolve({ harness: state.default?.harness, model: null });
 	for (const p of store.list()) {
 		const mark = p.id === store.activeId() ? "*" : " ";
-		const best = fit?.persona?.id === p.id && fit?.matched ? " ← 最匹配当前 harness" : "";
+		const best = fit?.persona?.id === p.id && fit?.matched ? " ← лучше всего подходит текущему harness" : "";
 		const desc = p.meta?.description ?? p.meta?.desc ?? "";
 		console.log(`${mark} ${p.id.padEnd(14)} ${String(p.meta?.name ?? "").padEnd(12)} ${desc.slice(0, 44)}${best}`);
 	}
-	console.log(`\n* = active（agent-purge use <id> 切换）`);
+	console.log(`\n* = active (переключить: agent-purge use <id>)`);
 }
 
 function webCmd() {
@@ -551,7 +576,7 @@ function webCmd() {
 			env: { ...process.env, AGENT_PURGE_HOME: DATA },
 		});
 		child.unref();
-		console.log(`agent-purge web 已在后台启动 → http://127.0.0.1:${port}（pid ${child.pid}）`);
+		console.log(`agent-purge web запущен в фоне → http://127.0.0.1:${port} (pid ${child.pid})`);
 		process.exit(0);
 	}
 	return import("../web/server.mjs").then(({ serveWeb }) => serveWeb(port));
@@ -592,7 +617,7 @@ async function armorCli(rest) {
 			if (i) console.log();
 			renderPlan(p, { color });
 		});
-		if (!ids.length) console.log(`\n${"─".repeat(48)}\n批量跑：agent-purge armor run --task crack-bare --layers off,sys,user --only ${list.map((p) => p.id).join(",")}`);
+		if (!ids.length) console.log(`\n${"─".repeat(48)}\nзапустить пачкой: agent-purge armor run --task crack-bare --layers off,sys,user --only ${list.map((p) => p.id).join(",")}`);
 		return;
 	}
 
@@ -613,8 +638,8 @@ async function armorCli(rest) {
 	if (sub === "run") {
 		if (flags.includes("--help")) {
 			console.log(`agent-purge armor run --task crack-bare --layers off,sys,user --only pi,codex --repeat 2 --concurrency 3
-  --base <url>  --key <key>  --model <id>    上游（默认读 MG_BASE / MG_KEY / MG_MODEL）
-  --task crack-bare|crack-persona           问法（裸问法 / 带人设词种子）
+  --base <url>  --key <key>  --model <id>    апстрим (по умолчанию MG_BASE / MG_KEY / MG_MODEL)
+  --task crack-bare|crack-persona           формулировка (чистая / с seed-фразой персоны)
   --layers off,sys,user|off,sys
   --out <dir>`);
 			return;
@@ -625,7 +650,7 @@ async function armorCli(rest) {
 			MG_MODEL: opts("--model", process.env.MG_MODEL),
 		};
 		if (!env.MG_BASE || !env.MG_KEY) {
-			console.error("缺少上游：--base / --key（或环境变量 MG_BASE / MG_KEY）。例：\n  agent-purge armor run --base https://api.deepseek.com/v1 --key $env:MG_KEY --model deepseek-flash --task crack-bare --layers off,sys --only pi");
+			console.error("нет апстрима: --base / --key (или переменные MG_BASE / MG_KEY). Пример:\n  agent-purge armor run --base https://api.deepseek.com/v1 --key $env:MG_KEY --model deepseek-flash --task crack-bare --layers off,sys --only pi");
 			process.exit(2);
 		}
 		const pass = [];
@@ -655,7 +680,7 @@ async function armorCli(rest) {
 		return;
 	}
 
-	console.error(`未知子命令: armor ${sub}（可用: matrix | plan | preflight | run | judge）`);
+	console.error(`неизвестная подкоманда: armor ${sub} (доступны: matrix | plan | preflight | run | judge)`);
 	process.exit(2);
 }
 
@@ -667,10 +692,10 @@ function printMatrix() {
 		inject: s.inject ? "yes" : "no",
 		hot: s.hotSwitch ? "yes" : "no",
 		chars: s.defaultSystemChars != null ? `${s.defaultSystemChars} → ${s.purgedSystemChars ?? "?"}` : "—",
-		armor: s.armor ? `${s.armor.probe.bare.sys ?? "—"}${s.armor.probe.bare.sys == null ? "" : "%"} / ${s.armor.probe.bare.user ?? "—"}${s.armor.probe.bare.user == null ? "" : "%"}` : "未测",
+		armor: s.armor ? `${s.armor.probe.bare.sys ?? "—"}${s.armor.probe.bare.sys == null ? "" : "%"} / ${s.armor.probe.bare.user ?? "—"}${s.armor.probe.bare.user == null ? "" : "%"}` : "не измерено",
 		version: s.measuredVersion ?? "—",
 	}));
-	const head = ["harness", "class", "override", "inject", "hot", "system chars", "sys/user 注入", "version"];
+	const head = ["harness", "class", "override", "inject", "hot", "system chars", "инъекция sys/user", "version"];
 	const width = head.map((h, i) => Math.max(h.length, ...rows.map((r) => String(Object.values(r)[i]).length)));
 	const line = (cells) => cells.map((c, i) => String(c).padEnd(width[i])).join("  ");
 	console.log(line(head));
@@ -678,50 +703,50 @@ function printMatrix() {
 	rows.forEach((r) => console.log(line(Object.values(r))));
 	const residues = Object.entries(matrix.harnesses).filter(([, s]) => s.residue);
 	if (residues.length) {
-		console.log("\n残留:");
+		console.log("\nостаток:");
 		residues.forEach(([n, s]) => console.log(`  ${n}: ${s.residue}`));
 	}
 }
 
 function help() {
-	console.log(`agent-purge —— 把任意 harness 的系统提示词换成你的 persona
+	console.log(`agent-purge — подменяет системный промпт любого harness на вашу персона
 
-一句话：先「选」，再「用」。选一次，之后所有入口都跟着变。
+Коротко: сначала «выбрать», потом «запускать». Выбрали один раз — дальше все входы следуют за выбором.
 
-① 选（写 state.json，全工具共用，改完立刻生效）
-   agent-purge use <id>           换 persona（ls 看有哪些，* = 当前）
-   agent-purge mode <m>           strict(只发人设) / replace(默认) / append / off
-   agent-purge web                浏览器里点选 harness · persona · mode
+① ВЫБРАТЬ (пишется в state.json, общее для всех входов, применяется сразу)
+   agent-purge use <id>           сменить persona (список — ls, * = текущая)
+   agent-purge mode <m>           strict(только персона) / replace(по умолчанию) / append / off
+   agent-purge web                выбрать harness · persona · mode в браузере
 
-② 用（三种入口，效果一样）
-   agent-purge                   裸敲 = 跑 default 里那家（web 选过就用选过的）
-   agent-purge <h> [--ask "…"]   指定一家启动；--dry-run 只看命令，-- 后面透传
-   <h>                           web / arm 之后直接敲命令名，就已经注入
+② ЗАПУСКАТЬ (три входа, результат одинаковый)
+   agent-purge                    без аргументов = запустить тот harness, что в default
+   agent-purge <h> [--ask "…"]    указать конкретный; --dry-run покажет команду, после -- аргументы уходят агенту
+   <h>                            после web / arm имя команды уже запускает с персоной
 
-③ 装（让「别的入口」也带人设；一条命令全装，想只做一项就点名）
-   agent-purge arm <h>|--all                常驻 + 裸命令接管 + /purge 全开（= 注册）
-   agent-purge 注册 [--all]                 中文别名，同上
-   agent-purge arm <h> --shim               只做裸命令接管（写 PATH 最前）
-   agent-purge arm <h> --install            只做配置文件常驻
-   agent-purge arm <h> --slash              只做会话内 /purge
-   agent-purge disarm <h>|--all             以上全部撤掉
+③ ПОСТАВИТЬ (чтобы и «другие входы» несли персону; одна команда ставит всё, можно указать канал)
+   agent-purge arm <h>|--all                 постоянная установка + перехват имени + /purge (всё сразу)
+   agent-purge 注册 [--all]                  китайский псевдоним, то же самое
+   agent-purge arm <h> --shim                только перехват имени команды (обёртка в начало PATH)
+   agent-purge arm <h> --install             только постоянная установка в конфиг
+   agent-purge arm <h> --slash               только команда /purge в сессии
+   agent-purge disarm <h>|--all              снять всё перечисленное
 
-④ 看
-   agent-purge status             一张表：每家的 shim / slash / install / 能做什么
-   agent-purge ls                 persona 列表
-   agent-purge matrix             能力矩阵（matrix.json）
-   agent-purge armor [...]        plan|preflight|run|judge 实测热力图
-   agent-purge doctor             本机探测（哪家装了、版本）
+④ ПОСМОТРЕТЬ
+   agent-purge status             таблица: у каждого harness shim / slash / install и что вообще возможно
+   agent-purge ls                 список persona
+   agent-purge matrix             матрица возможностей (matrix.json)
+   agent-purge armor [...]        plan|preflight|run|judge — замеры инъекции
+   agent-purge doctor             что найдено на машине (кто установлен, версии)
 
-通道语义
-   shim     在 PATH 最前放同名 cmd，裸敲即经 agent-purge 启动（sys 层注入）
-   install  改 harness 自己的配置/插件文件（连别人启动的它也会带人设）
-   slash    会话里打 /purge 换提示词：**只有 pi 能做**（扩展在 before_agent_start 重写 systemPrompt，真 sys 层、热切换）
-         其他家没有这个能力：/purge 展开成用户消息，bench 实测 0/2 无效，所以不提供
-   注入强度：只有 sys 层算。user 层（上下文块/用户消息）在 codex/claude/opencode/grok/hermes 实测都是 0/2，一律不提供。
+СМЫСЛ КАНАЛОВ
+   shim      в начало PATH кладётся обёртка с тем же именем; набираете команду — запуск идёт через agent-purge (инъекция в слой sys)
+   install   правится собственный конфиг/плагин harness (подействует и на запуски не через agent-purge)
+   slash     команда /purge в сессии: **умеет только pi** (расширение переписывает systemPrompt в before_agent_start — настоящий слой sys, переключение на лету)
+         у остальных такой возможности нет: /purge разворачивается в пользовательское сообщение, на замерах 0/2 — поэтому не предлагается
+   Сила инъекции: считается только слой sys. Слой user (блок контекста / пользовательское сообщение) у codex/claude/opencode/grok/hermes на замерах 0/2 — не предлагается вовсе.
 
 harness: pi, opencode, codex, claude, grok, omp, hermes, zcode, antigravity, qoder, workbuddy, codebuddy
-         qoder / workbuddy 无 prompt 组装入口（提示词在服务端），只能改上下文规则文件。
+         у qoder / workbuddy нет точки сборки промпта (он на сервере) — можно править только файлы контекстных правил.
 `);
 }
 

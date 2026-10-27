@@ -34,10 +34,10 @@ export function serveWeb(port = 7788) {
 	server.on("error", (e) => {
 		// 端口被旧实例占着的时候，--detach 是静默的 → 这里必须说人话，否则用户看到的是旧 UI
 		if (e.code === "EADDRINUSE") {
-			console.error(`${port} 已被占用：老实例还在跑（可能是改动前的版本，UI 会是旧的）。`);
-			console.error(`清掉再启：Get-NetTCPConnection -LocalPort ${port} -State Listen | % { Stop-Process -Id $_.OwningProcess -Force }`);
+			console.error(`${port} уже занят: старый экземпляр ещё работает (возможно, версия до правок — UI будет старым).`);
+			console.error(`Убить и запустить заново: Get-NetTCPConnection -LocalPort ${port} -State Listen | % { Stop-Process -Id $_.OwningProcess -Force }`);
 		} else {
-			console.error(`web 启动失败：${e.message}`);
+			console.error(`web не запустился: ${e.message}`);
 		}
 		process.exit(1);
 	});
@@ -68,7 +68,7 @@ async function handle(req, res) {
 	if (req.method === "POST" && p === "/api/install") return send(res, 200, applyInstall(await body(req)));
 	if (req.method === "POST" && p === "/api/arm") return send(res, 200, applyArm(await body(req)));
 	if (req.method === "POST" && p === "/api/arm-all") return send(res, 200, applyArmAll(await body(req)));
-	send(res, 404, { error: "not found" });
+	send(res, 404, { error: "не найдено" });
 }
 
 function armorState() {
@@ -170,9 +170,9 @@ function defaultsOf(st, harnesses) {
 function saveDefaults(payload) {
 	const { harness, mode } = payload;
 	const spec = matrix.harnesses[harness];
-	if (!spec) return { error: `未知 harness: ${harness}` };
-	if (spec.class === "unsupported") return { error: `${harness} 做不到：${spec.reason}` };
-	if (mode && !MODES.includes(mode)) return { error: `mode 只能是 ${MODES.join(" / ")}` };
+	if (!spec) return { error: `неизвестный harness: ${harness}` };
+	if (spec.class === "unsupported") return { error: `${harness} не умеет: ${spec.reason}` };
+	if (mode && !MODES.includes(mode)) return { error: `mode может быть только ${MODES.join(" / ")}` };
 	try {
 		return { ok: true, defaults: setDefault(DATA, { harness, mode: mode ?? "replace" }) };
 	} catch (e) {
@@ -182,8 +182,8 @@ function saveDefaults(payload) {
 
 function savePersona(payload) {
 	const id = String(payload.id || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
-	if (!id) return { error: "id 不能为空（小写字母/数字/-/_）" };
-	if (!payload.body?.trim()) return { error: "正文不能为空" };
+	if (!id) return { error: "id не может быть пустым (строчные буквы/цифры/-/_)" };
+	if (!payload.body?.trim()) return { error: "текст не может быть пустым" };
 	try {
 		// 只覆盖表单带上来的键，其余 frontmatter（harness / order / description...）原样保留：
 		// 旧实现直接拿表单三个字段重写文件，点一次保存就把手写的键全吃掉
@@ -218,14 +218,14 @@ function savePersona(payload) {
 }
 
 function deletePersona(id) {
-	if (!id) return { error: "缺少 id" };
-	if (store.list().length <= 1) return { error: "至少保留一个 persona" };
+	if (!id) return { error: "не указан id" };
+	if (store.list().length <= 1) return { error: "должна остаться хотя бы одна persona" };
 	store.remove(id); // remove 内部会处理“删的就是 active”的指针改道
 	return { ok: true, active: store.activeId() };
 }
 
 function usePersona(payload) {
-	if (!payload.id) return { error: "缺少 id" };
+	if (!payload.id) return { error: "не указан id" };
 	try {
 		store.setActive(payload.id);
 		// 两个指针必须一起写，否则 UI 选的“当前人设”和 `agent-purge` 实际用的不是同一个
@@ -265,14 +265,14 @@ function applyArmAll(payload) {
 	const failed = [];
 	for (const [h, spec] of Object.entries(matrix.harnesses)) {
 		if (spec.class === "unsupported") {
-			failed.push(`${h}: 做不到（${spec.reason}）`);
+			failed.push(`${h}: не умеет (${spec.reason})`);
 			continue;
 		}
 		const r = applyArm({ harness: h, channel, action: verb, persona: payload.persona });
 		if (r.error) failed.push(`${h}: ${r.error}`);
 		else perHarness.push({ harness: h, done: (r.done ?? []).map((d) => d.channel), skipped: r.skipped ?? [] });
 	}
-	if (!perHarness.length) return { error: failed.join("；") || "没有可注册的 harness" };
+	if (!perHarness.length) return { error: failed.join("; ") || "нет harness, которые можно зарегистрировать" };
 	const after = loadState(DATA).state.default;
 	return { ok: true, action: verb, channel, mode: after?.mode ?? null, harnesses: perHarness, failed };
 }
@@ -286,7 +286,7 @@ function applyInstall(payload) {
 	}
 	// 装谁就把谁设为 active：active.md 与 install 指向始终是同一份正文
 	const wanted = payload.persona ?? store.activeId();
-	if (!store.read(wanted)) return { error: "没有可用 persona" };
+	if (!store.read(wanted)) return { error: "нет доступной persona" };
 	store.setActive(wanted);
 	const r = install(harness, { root: DATA, active: store.refreshActive() });
 	if (r.error) return { error: r.error };
@@ -304,7 +304,7 @@ function verbOf(action) {
 function applyArm(payload) {
 	const { harness, channel, action } = payload;
 	const id = payload.persona ?? store.activeId();
-	if (!store.read(id)) return { error: "没有可用 persona" };
+	if (!store.read(id)) return { error: "нет доступной persona" };
 	const verb = verbOf(action);
 	const channels = !channel || channel === "all" ? ["install", "shim", "slash"] : [channel];
 	const done = [];
@@ -314,7 +314,7 @@ function applyArm(payload) {
 		if (r.error) skipped.push(`${ch}: ${r.error}`);
 		else done.push({ channel: ch, ...r });
 	}
-	if (!done.length) return { error: skipped.join("；") || "没有可用通道" };
+	if (!done.length) return { error: skipped.join("; ") || "нет доступных каналов" };
 	return { ok: true, harness, action: verb, done, skipped };
 }
 
@@ -352,7 +352,7 @@ function armChannel(harness, channel, verb, id) {
 		setArmed(DATA, harness, "slash", true);
 		return { file: r.file, layer: r.layer };
 	}
-	return { error: `未知通道: ${channel}` };
+	return { error: `неизвестный канал: ${channel}` };
 }
 
 const send = (res, code, obj) => res.writeHead(code, { "content-type": "application/json; charset=utf-8" }).end(JSON.stringify(obj));
